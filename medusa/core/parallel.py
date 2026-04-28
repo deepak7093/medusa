@@ -1004,9 +1004,11 @@ class MedusaParallelScanner:
         # startups. One batch run amortises that cost across all files.
         # Workers inherit the populated caches via copy-on-write fork semantics.
         if files:
-            import os as _os
-            _common = Path(_os.path.commonpath([str(f) for f in files]))
-            _project_root = _common if _common.is_dir() else _common.parent
+            # Always batch-scan against the user-selected target directory.
+            # `files` can include explicit out-of-tree paths (e.g. user-level MCP
+            # config files), and computing commonpath across mixed roots can widen
+            # scope to an ancestor like "/" instead of the intended repo/folder.
+            _project_root = self.project_root
             _icon2 = '*' if self.force_ascii else '\U0001f50d'
 
             from medusa.scanners.semgrep_scanner import SemgrepScanner as _SemgrepScanner

@@ -153,6 +153,13 @@ medusa scan . --format markdown
 medusa scan . --format all
 ```
 
+**Discovery Inventory Graph** - Every scan also emits MCP/agent tool inventory artifacts:
+- `medusa-inventory-<timestamp>.json` (nodes, edges, source metadata)
+- `medusa-inventory-<timestamp>.html` (interactive graph with filter/search)
+- Discovery is enriched with parser-based extraction (Tree-sitter) plus safe regex fallback for broader coverage.
+
+Use these to map agent-tool-MCP relationships and trace each edge back to file/line evidence.
+
 ---
 
 ## 📚 Language Support

@@ -78,6 +78,10 @@ docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.0.0",
 ]
+parsers = [
+    "tree-sitter>=0.23.0",
+    "tree-sitter-languages>=1.10.2",
+]
 
 [project.urls]
 Homepage = "https://medusa-security.dev"

@@ -57,6 +57,7 @@ class ScannerIssue:
     cwe_id: Optional[int] = None
     cwe_link: Optional[str] = None
     rule_url: Optional[str] = None
+    metadata: Optional[Dict] = None
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization"""
@@ -70,6 +71,7 @@ class ScannerIssue:
             'cwe_id': self.cwe_id,
             'cwe_link': self.cwe_link,
             'rule_url': self.rule_url,
+            'metadata': self.metadata,
         }
 
 
