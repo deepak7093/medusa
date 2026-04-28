@@ -18,5 +18,7 @@ RUN python3 -m venv /opt/medusa && \
     rm -rf /tmp/*.whl
 
 # Set MEDUSA as entrypoint (using venv binary)
-ENTRYPOINT ["/opt/medusa/bin/medusa"]
-CMD ["--help"]
+# ENTRYPOINT ["/opt/medusa/bin/medusa"]
+# CMD ["--help"]
+
+ENTRYPOINT ["/bin/sh"]
