@@ -23,7 +23,7 @@ import hashlib
 import signal
 import time
 from pathlib import Path
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Any, Dict, List, Set, Tuple, Optional
 from multiprocessing import Pool, cpu_count
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
