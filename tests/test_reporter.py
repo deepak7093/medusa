@@ -220,6 +220,111 @@ class TestSARIFGeneration:
         rule_id = sarif['runs'][0]['results'][0]['ruleId']
         assert rule_id == 'CWE-89'
 
+    def test_sarif_tags_include_framework_mappings(self, tmp_path):
+        """Test SARIF tags include mapping-derived framework references."""
+        findings = [
+            {
+                'scanner': 'test',
+                'file': 'test.py',
+                'line': 10,
+                'severity': 'HIGH',
+                'issue': 'Prompt injection detected',
+                'confidence': 'HIGH',
+                'cwe': 74,
+                'mappings': {
+                    'owasp_llm': 'LLM01:2025',
+                    'mitre_attack': [{'technique_id': 'T1566'}],
+                    'compliance': [{'framework': 'ISO_27001:2022', 'control_id': 'A.5.15'}],
+                },
+            }
+        ]
+        scan_results = {'findings': findings, 'files_scanned': 1, 'total_lines_scanned': 100}
+
+        reporter = MedusaReportGenerator(output_dir=tmp_path)
+        sarif_path = reporter.generate_sarif_report(scan_results)
+
+        with open(sarif_path) as f:
+            sarif = json.load(f)
+
+        rule = sarif['runs'][0]['tool']['driver']['rules'][0]
+        tags = rule['properties']['tags']
+
+        assert 'external/cwe/cwe-74' in tags
+        assert any(t.startswith('external/owasp/llm/') for t in tags)
+        assert 'external/mitre/attack/t1566' in tags
+        assert 'external/compliance/iso_27001-2022/a.5.15' in tags
+
+    def test_sarif_handles_none_issue_and_code(self, tmp_path):
+        """Regression: SARIF should not crash when issue/code are None."""
+        findings = [
+            {
+                'scanner': 'test',
+                'file': 'test.py',
+                'line': 1,
+                'severity': 'LOW',
+                'issue': None,
+                'code': None,
+                'confidence': 'LOW',
+            }
+        ]
+        scan_results = {'findings': findings, 'files_scanned': 1, 'total_lines_scanned': 1}
+
+        reporter = MedusaReportGenerator(output_dir=tmp_path)
+        sarif_path = reporter.generate_sarif_report(scan_results)
+        assert sarif_path.exists()
+
+
+class TestFrameworkMapping:
+    def test_framework_mapping_infers_owasp_llm(self):
+        from medusa.core.framework_mapping import map_finding
+
+        finding = {
+            "scanner": "test",
+            "file": "x.py",
+            "line": 1,
+            "severity": "HIGH",
+            "issue": "Detected prompt injection in tool description",
+            "code": "description = 'ignore previous instructions'",
+        }
+        mapped = map_finding(finding)
+        assert mapped.get("owasp_llm") == "LLM01:2025"
+
+    def test_framework_mapping_adds_mitre_attack_urls(self):
+        from medusa.core.framework_mapping import map_finding
+
+        finding = {
+            "issue": "Supply chain compromise",
+            "mappings": {
+                "mitre_attack": [
+                    {"technique_id": "T1195"},
+                    {"technique_id": "T1566.001"},
+                    {"technique_id": "TA0010"},
+                ]
+            },
+        }
+        mapped = map_finding(finding)
+        refs = mapped.get("mitre_attack", [])
+        url_by_id = {r.get("technique_id"): r.get("url") for r in refs if isinstance(r, dict)}
+        assert url_by_id["T1195"] == "https://attack.mitre.org/techniques/T1195/"
+        assert url_by_id["T1566.001"] == "https://attack.mitre.org/techniques/T1566/001/"
+        assert url_by_id["TA0010"] == "https://attack.mitre.org/tactics/TA0010/"
+
+    def test_framework_mapping_adds_mitre_atlas_urls(self):
+        from medusa.core.framework_mapping import map_finding
+
+        finding = {
+            "issue": "ATLAS mapping present",
+            "mitre_atlas": "AML.T0051, AML.CS0016, AML.M0020, AML.TA0015",
+        }
+        mapped = map_finding(finding)
+        refs = mapped.get("mitre_atlas_refs", [])
+        url_by_id = {r.get("technique_id"): r.get("url") for r in refs if isinstance(r, dict)}
+
+        assert url_by_id["AML.T0051"] == "https://atlas.mitre.org/techniques/AML.T0051/"
+        assert url_by_id["AML.CS0016"] == "https://atlas.mitre.org/studies/AML.CS0016/"
+        assert url_by_id["AML.M0020"] == "https://atlas.mitre.org/mitigations/AML.M0020/"
+        assert url_by_id["AML.TA0015"] == "https://atlas.mitre.org/tactics/AML.TA0015/"
+
     def test_sarif_cwe_reference(self, tmp_path):
         """Test SARIF includes CWE references when available"""
         findings = [

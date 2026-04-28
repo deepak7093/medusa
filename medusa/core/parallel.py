@@ -360,13 +360,47 @@ class MedusaParallelScanner:
                  workers: int = None,
                  use_cache: bool = True,
                  quick_mode: bool = False,
-                 extra_excludes: list = None):
+                 extra_excludes: list = None,
+                 ai_only: bool = False):
         self.project_root = project_root.absolute()
         self.workers = workers or cpu_count()
         self.use_cache = use_cache
         self.quick_mode = quick_mode
         self.cache = MedusaCacheManager() if use_cache else None
         self.force_ascii = not self._is_modern_terminal()
+        self.ai_only = ai_only
+
+        # "AI-only" scanner allowlist: focuses on AI/agent/MCP/RAG/model security.
+        # Excludes traditional language linters (bandit/eslint/etc.) and broad IaC scanners.
+        self._ai_only_scanner_names = {
+            # AI/agent/security scanners
+            'AIContextScanner',
+            'AgentMemoryScanner',
+            'AgentReflectionScanner',
+            'AgentPlanningScanner',
+            'MultiAgentScanner',
+            'ExcessiveAgencyScanner',
+            'PromptLeakageScanner',
+            'PromptInjectionCodeScanner',
+            'ToolCallbackScanner',
+            'OWASPLLMScanner',
+            'LLMOpsScanner',
+            'LLMGuardScanner',
+            'GarakScanner',
+            'ModelAttackScanner',
+            'VectorDBScanner',
+            'DatasetInjectionScanner',
+            'HyperparameterScanner',
+            'ModelScanScanner',
+            # MCP-focused scanners
+            'MCPConfigScanner',
+            'MCPServerScanner',
+            'MCPRemoteRCEScanner',
+            'DockerMCPScanner',
+            # Supporting security scanners that often matter in AI apps
+            'GitLeaksScanner',
+            'PluginSecurityScanner',
+        }
 
         # Load configuration from medusa.yml (or .medusa.yml)
         from medusa.config import ConfigManager
@@ -389,7 +423,19 @@ class MedusaParallelScanner:
         print(f"   Workers: {self.workers} cores")
         print(f"   Cache: {'enabled' if use_cache else 'disabled'}")
         print(f"   Mode: {'quick (changed files only)' if quick_mode else 'full'}")
+        if self.ai_only:
+            print(f"   Scanners: AI-only")
         print()
+
+    def _filter_scanners(self, scanners: List[Any]) -> List[Any]:
+        """Filter scanner list based on CLI flags (e.g. --ai-only)."""
+        if not self.ai_only:
+            return scanners
+        filtered = []
+        for s in scanners:
+            if getattr(s, 'name', '') in self._ai_only_scanner_names:
+                filtered.append(s)
+        return filtered
 
     @staticmethod
     def _is_modern_terminal() -> bool:
@@ -721,6 +767,7 @@ class MedusaParallelScanner:
         scanners = self._scanner_map.get(str(file_path))
         if scanners is None:
             scanners = scanner_registry.get_scanners_for_file(file_path)
+        scanners = self._filter_scanners(scanners)
 
         all_issues = []
         scanner_names = []
@@ -846,6 +893,7 @@ class MedusaParallelScanner:
             scanners = scanner_registry.get_scanners_for_file(
                 file_path, content_head=content_head
             )
+            scanners = self._filter_scanners(scanners)
             self._scanner_map[str(file_path)] = scanners
             for scanner in scanners:
                 name = scanner.name
@@ -1270,7 +1318,7 @@ class MedusaParallelScanner:
         return results
 
     def generate_report(self, results: List[ScanResult], output_dir: Path, formats: List[str] = None, missing_linters: List[str] = None):
-        """Generate reports in requested formats (json, html, markdown)"""
+        """Generate reports in requested formats (json, html, markdown, sarif)"""
         if formats is None:
             formats = ['json', 'html']
 
@@ -1305,6 +1353,7 @@ class MedusaParallelScanner:
                 # results always take this branch because cached_issues is
                 # serialized as dicts.
                 if isinstance(issue, dict):
+                    meta = issue.get('metadata') if isinstance(issue.get('metadata'), dict) else {}
                     findings.append({
                         'scanner': issue.get('_scanner_name', result.scanner) or 'unknown',
                         'file': result.file,
@@ -1312,11 +1361,20 @@ class MedusaParallelScanner:
                         'severity': issue.get('issue_severity', issue.get('severity', 'MEDIUM')),
                         'confidence': issue.get('issue_confidence', 'HIGH'),
                         'issue': issue.get('issue_text', issue.get('message', str(issue))),
-                        'cwe': issue.get('issue_cwe', {}).get('id'),
-                        'code': _truncate_code(issue.get('code', ''))
+                        # Prefer new-style ScannerIssue.to_dict fields (cwe_id),
+                        # fall back to legacy nested issue_cwe shape.
+                        'cwe': issue.get('cwe_id') or issue.get('issue_cwe', {}).get('id'),
+                        'code': _truncate_code(issue.get('code', '')),
+                        'rule_id': issue.get('rule_id'),
+                        'rule_url': issue.get('rule_url'),
+                        'category': meta.get('category') or issue.get('category'),
+                        'owasp_llm': meta.get('owasp_llm') or issue.get('owasp_llm') or meta.get('owasp'),
+                        'mitre_atlas': meta.get('mitre_atlas') or issue.get('mitre_atlas'),
+                        'metadata': meta or None,
                     })
                 # Handle new ScannerIssue object format
                 else:
+                    meta = issue.metadata if isinstance(getattr(issue, 'metadata', None), dict) else {}
                     findings.append({
                         'scanner': result.scanner or 'unknown',
                         'file': result.file,
@@ -1325,8 +1383,31 @@ class MedusaParallelScanner:
                         'confidence': 'HIGH',
                         'issue': issue.message,
                         'cwe': issue.cwe_id,
-                        'code': _truncate_code(issue.code)
+                        'code': _truncate_code(issue.code),
+                        'rule_id': getattr(issue, 'rule_id', None),
+                        'rule_url': getattr(issue, 'rule_url', None),
+                        'category': meta.get('category'),
+                        'owasp_llm': meta.get('owasp_llm') or meta.get('owasp'),
+                        'mitre_atlas': meta.get('mitre_atlas'),
+                        'metadata': meta or None,
                     })
+
+        # Enrich findings with framework mappings (MITRE + compliance)
+        try:
+            from medusa.core.framework_mapping import map_finding
+            for f in findings:
+                # Preserve any existing mappings (e.g., injected by a scanner) but merge ours in.
+                existing = f.get('mappings') if isinstance(f.get('mappings'), dict) else {}
+                mapped = map_finding(f)
+                if existing:
+                    merged = dict(existing)
+                    merged.update(mapped)
+                    f['mappings'] = merged
+                elif mapped:
+                    f['mappings'] = mapped
+        except Exception:
+            # Mapping is best-effort — never fail the scan/report for enrichment errors.
+            pass
 
         # Apply FP filter to reduce false positives
         fp_stats = None
@@ -1384,6 +1465,11 @@ class MedusaParallelScanner:
         if 'markdown' in formats:
             md_path = generator.generate_markdown_report(scan_results, output_dir / f"medusa-scan-{timestamp}.md")
             generated_files.append(('Markdown', md_path))
+
+        # Generate SARIF report
+        if 'sarif' in formats:
+            sarif_path = generator.generate_sarif_report(scan_results, output_dir / f"medusa-scan-{timestamp}.sarif")
+            generated_files.append(('SARIF', sarif_path))
 
         # Print generated files
         _ascii = self.force_ascii

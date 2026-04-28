@@ -177,6 +177,13 @@ class YAMLRuleScanner(RuleBasedScanner):
                                 rule_id=rule.id,
                                 cwe_id=cwe_id,
                                 cwe_link=cwe_link,
+                                metadata={
+                                    'category': rule.category,
+                                    'owasp_llm': rule.owasp_llm,
+                                    'mitre_atlas': rule.mitre_atlas,
+                                    'references': list(rule.references) if rule.references else [],
+                                    'rule_name': rule.name,
+                                },
                             ))
                             break
                     except re.error:

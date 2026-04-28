@@ -1229,18 +1229,20 @@ def main(ctx, version):
 @click.option('-o', '--output', type=click.Path(), default=None,
               help='Output directory for reports')
 @click.option('--format', 'output_formats', multiple=True,
-              type=click.Choice(['json', 'html', 'markdown', 'all']),
+              type=click.Choice(['json', 'html', 'markdown', 'sarif', 'all']),
               default=['json', 'html'],
-              help='Output format(s): json, html, markdown, or all (can specify multiple)')
+              help='Output format(s): json, html, markdown, sarif, or all (can specify multiple)')
 @click.option('--no-report', is_flag=True,
               help='Skip report generation (faster)')
+@click.option('--ai-only', is_flag=True, default=False,
+              help='Run only AI/agent/MCP-focused scanners (skip traditional language linters)')
 @click.option('-e', '--exclude', multiple=True,
               help='Exclude paths from scan (can specify multiple, e.g. --exclude archive/ --exclude scripts/)')
 @click.option('-g', '--git', 'git_url', type=str, default=None,
               help='Clone and scan a remote git repo (URL or user/repo shorthand)')
 @click.option('--allow-any-host', 'allow_any_host', is_flag=True, default=False,
               help='Allow --git to clone from any host (default: github.com, gitlab.com, bitbucket.org, codeberg.org). Private IPs are still rejected.')
-def scan(target, workers, quick, force, no_cache, fail_on, output, output_formats, no_report, exclude, git_url, allow_any_host):
+def scan(target, workers, quick, force, no_cache, fail_on, output, output_formats, no_report, ai_only, exclude, git_url, allow_any_host):
     """
     Scan a directory or file for security issues.
 
@@ -1271,6 +1273,7 @@ def scan(target, workers, quick, force, no_cache, fail_on, output, output_format
             output=output,
             output_formats=output_formats,
             no_report=no_report,
+            ai_only=ai_only,
             exclude=exclude,
         )
         return
@@ -1447,7 +1450,8 @@ def scan(target, workers, quick, force, no_cache, fail_on, output, output_format
             workers=workers,
             use_cache=not no_cache and not force,
             quick_mode=quick,
-            extra_excludes=list(exclude) if exclude else None
+            extra_excludes=list(exclude) if exclude else None,
+            ai_only=ai_only,
         )
 
         # Find files
@@ -1469,7 +1473,7 @@ def scan(target, workers, quick, force, no_cache, fail_on, output, output_format
             # Handle 'all' format
             formats = list(output_formats)
             if 'all' in formats:
-                formats = ['json', 'html', 'markdown']
+                formats = ['json', 'html', 'markdown', 'sarif']
 
             scanner.generate_report(results, output_dir, formats=formats, missing_linters=missing_linters)
 
@@ -1708,6 +1712,7 @@ def _scan_git_repo(
     output: Optional[str],
     output_formats: tuple[str, ...],
     no_report: bool,
+    ai_only: bool,
     exclude: tuple[str, ...],
     allow_any_host: bool = False,
 ) -> None:
@@ -1843,6 +1848,7 @@ def _scan_git_repo(
             use_cache=not no_cache and not force,
             quick_mode=quick,
             extra_excludes=list(exclude) if exclude else None,
+            ai_only=ai_only,
         )
 
         files = scanner.find_scannable_files()
@@ -1861,7 +1867,7 @@ def _scan_git_repo(
 
             formats = list(output_formats)
             if 'all' in formats:
-                formats = ['json', 'html', 'markdown']
+                formats = ['json', 'html', 'markdown', 'sarif']
 
             scanner.generate_report(results, output_dir, formats=formats, missing_linters=missing_linters)
 

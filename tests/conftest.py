@@ -10,7 +10,31 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Any
 
-from medusa.core.licensing import LicenseTier, LicenseInfo
+try:
+    from medusa.core.licensing import LicenseTier, LicenseInfo
+except ModuleNotFoundError:
+    # OSS/dev builds may not ship the licensing module. Provide a minimal
+    # fallback so the rest of the test suite can run.
+    from dataclasses import dataclass
+    from enum import Enum
+    from typing import Optional, List
+
+    class LicenseTier(str, Enum):
+        FREE = "free"
+        PROFESSIONAL = "professional"
+        ENTERPRISE = "enterprise"
+
+    @dataclass
+    class LicenseInfo:
+        tier: LicenseTier
+        email: Optional[str]
+        organization: Optional[str]
+        expires_at: Optional[datetime]
+        features: List[str]
+        max_repos: int
+        api_access: bool
+        runtime_filters: bool
+        custom_rules: bool
 
 
 @pytest.fixture

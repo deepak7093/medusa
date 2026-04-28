@@ -76,6 +76,11 @@ def _md_sanitize_inline(text: str) -> str:
     return text.replace('`', '').replace('\n', '').replace('\r', '')
 
 
+def _safe_tag_component(text: str) -> str:
+    """Sanitize a string so it is safe for SARIF 'tags' usage."""
+    return re.sub(r'[^a-zA-Z0-9_.-]+', '-', str(text)).strip('-').lower()
+
+
 class MedusaReportGenerator:
     """Generate comprehensive security reports from MEDUSA scans"""
 
@@ -337,6 +342,31 @@ class MedusaReportGenerator:
                 if cwe and str(cwe).isdigit():
                     md += f"**CWE:** [CWE-{cwe}](https://cwe.mitre.org/data/definitions/{cwe}.html)  \n"
 
+                mappings = finding.get('mappings') if isinstance(finding.get('mappings'), dict) else {}
+                if mappings:
+                    parts: List[str] = []
+                    owasp_llm = mappings.get('owasp_llm')
+                    if owasp_llm:
+                        parts.append(f"OWASP LLM: {owasp_llm}")
+                    mitre_attack = mappings.get('mitre_attack')
+                    if isinstance(mitre_attack, list) and mitre_attack:
+                        ids = []
+                        for t in mitre_attack[:4]:
+                            if isinstance(t, dict) and t.get('technique_id'):
+                                ids.append(str(t['technique_id']))
+                        if ids:
+                            parts.append(f"MITRE ATT&CK: {', '.join(ids)}")
+                    compliance = mappings.get('compliance')
+                    if isinstance(compliance, list) and compliance:
+                        refs = []
+                        for c in compliance[:4]:
+                            if isinstance(c, dict) and c.get('framework') and c.get('control_id'):
+                                refs.append(f"{c['framework']} {c['control_id']}")
+                        if refs:
+                            parts.append(f"Compliance: {', '.join(refs)}")
+                    if parts:
+                        md += f"**Mappings:** {' | '.join(parts)}  \n"
+
                 if finding.get('code'):
                     md += f"\n**Code:**\n{_md_code_fence(str(finding['code']))}\n"
 
@@ -419,6 +449,11 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
         seen_rule_ids: Dict[str, int] = {}
 
         for finding in findings:
+            issue_text = finding.get('issue')
+            if issue_text is None or issue_text == '':
+                issue_text = 'unknown'
+            issue_text = str(issue_text)
+
             # Determine rule ID
             cwe = finding.get('cwe')
             if cwe and str(cwe).isdigit():
@@ -426,7 +461,7 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
             else:
                 cwe = None  # Clear invalid CWE
                 # Sanitize issue text into a rule ID
-                rule_id = _SARIF_RULE_ID_SANITIZE.sub('-', finding.get('issue', 'unknown'))
+                rule_id = _SARIF_RULE_ID_SANITIZE.sub('-', issue_text)
                 rule_id = _SARIF_RULE_ID_COLLAPSE.sub('-', rule_id).strip('-')
 
             # Track rule index for ruleIndex reference
@@ -437,12 +472,12 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
                 # Build rule definition
                 rule_def: Dict[str, Any] = {
                     'id': rule_id,
-                    'name': finding.get('issue', 'Unknown Issue'),
+                    'name': issue_text,
                     'shortDescription': {
-                        'text': finding.get('issue', 'Unknown Issue'),
+                        'text': issue_text,
                     },
                     'fullDescription': {
-                        'text': finding.get('issue', 'Unknown Issue'),
+                        'text': issue_text,
                     },
                     'properties': {
                         'security-severity': severity_to_score.get(finding.get('severity', 'UNDEFINED'), '0.0'),
@@ -485,7 +520,7 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
                 'ruleIndex': rule_index,
                 'level': severity_to_level.get(finding.get('severity', 'UNDEFINED'), 'note'),
                 'message': {
-                    'text': finding.get('issue', 'Unknown Issue'),
+                    'text': issue_text,
                 },
                 'locations': [location],
                 'fingerprints': {
@@ -538,8 +573,10 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
     def _generate_sarif_tags(self, finding: Dict[str, Any]) -> List[str]:
         """Generate tags for a SARIF rule based on finding content."""
         tags = ['security']
-        issue = finding.get('issue', '').lower()
-        code = finding.get('code', '').lower()
+        issue = (finding.get('issue') or '')
+        code = (finding.get('code') or '')
+        issue = str(issue).lower()
+        code = str(code).lower()
         text = f"{issue} {code}"
 
         for tag, compiled in _SARIF_TAG_PATTERNS:
@@ -550,6 +587,31 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
         cwe = finding.get('cwe')
         if cwe:
             tags.append(f"external/cwe/cwe-{cwe}")
+
+        mappings = finding.get('mappings') if isinstance(finding.get('mappings'), dict) else {}
+        if mappings:
+            owasp_llm = mappings.get('owasp_llm')
+            if owasp_llm:
+                tags.append(f"external/owasp/llm/{_safe_tag_component(owasp_llm)}")
+
+            mitre_attack = mappings.get('mitre_attack')
+            if isinstance(mitre_attack, list):
+                for t in mitre_attack:
+                    if not isinstance(t, dict):
+                        continue
+                    tid = t.get('technique_id')
+                    if tid:
+                        tags.append(f"external/mitre/attack/{_safe_tag_component(tid)}")
+
+            compliance = mappings.get('compliance')
+            if isinstance(compliance, list):
+                for c in compliance:
+                    if not isinstance(c, dict):
+                        continue
+                    fw = c.get('framework')
+                    cid = c.get('control_id')
+                    if fw and cid:
+                        tags.append(f"external/compliance/{_safe_tag_component(fw)}/{_safe_tag_component(cid)}")
 
         return tags
 
@@ -961,6 +1023,33 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
             line-height: 1.5;
         }}
 
+        .finding-mappings {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }}
+
+        .chip {{
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.2px;
+            white-space: nowrap;
+        }}
+
+        .chip-muted {{
+            color: var(--text-muted);
+            background: rgba(255, 255, 255, 0.02);
+            font-weight: 500;
+        }}
+
         .finding-code {{
             background: #0d1117;
             border: 1px solid var(--border);
@@ -1187,6 +1276,40 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
             if fp_analysis.get('is_likely_fp'):
                 fp_badge = '<span style="color: var(--medium);">Likely FP</span>'
 
+            # Framework mappings (chips)
+            mappings = finding.get('mappings') if isinstance(finding.get('mappings'), dict) else {}
+            mapping_chips = ''
+            if mappings:
+                chips: List[str] = []
+                owasp_llm = mappings.get('owasp_llm')
+                if owasp_llm:
+                    chips.append(f'<span class="chip">OWASP {html_lib.escape(str(owasp_llm))}</span>')
+                mitre_attack = mappings.get('mitre_attack')
+                if isinstance(mitre_attack, list):
+                    ids = []
+                    for t in mitre_attack[:3]:
+                        if isinstance(t, dict) and t.get('technique_id'):
+                            ids.append(str(t["technique_id"]))
+                    for tid in ids:
+                        chips.append(f'<span class="chip">ATT&CK {html_lib.escape(tid)}</span>')
+                compliance = mappings.get('compliance')
+                if isinstance(compliance, list) and compliance:
+                    # Show up to 2 controls; rest summarized.
+                    shown = 0
+                    for c in compliance:
+                        if shown >= 2:
+                            break
+                        if isinstance(c, dict) and c.get('framework') and c.get('control_id'):
+                            chips.append(
+                                f'<span class="chip">{html_lib.escape(str(c["framework"]))} '
+                                f'{html_lib.escape(str(c["control_id"]))}</span>'
+                            )
+                            shown += 1
+                    if len(compliance) > shown:
+                        chips.append(f'<span class="chip chip-muted">+{len(compliance) - shown} more</span>')
+                if chips:
+                    mapping_chips = f'<div class="finding-mappings">{"".join(chips)}</div>'
+
             html_parts.append(f'''
             <div class="finding {severity_class}">
                 <div class="finding-header">
@@ -1194,6 +1317,7 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
                     <span class="finding-badge {severity_class}">{severity}</span>
                 </div>
                 <div class="finding-message">{issue}</div>
+                {mapping_chips}
                 {code_block}
                 <div class="finding-meta">
                     <span>Scanner: {scanner}</span>
