@@ -253,6 +253,7 @@ class TestSARIFGeneration:
         assert any(t.startswith('external/owasp/llm/') for t in tags)
         assert 'external/mitre/attack/t1566' in tags
         assert 'external/compliance/iso_27001-2022/a.5.15' in tags
+        assert 'medusa/category/ai' in tags
 
     def test_sarif_handles_none_issue_and_code(self, tmp_path):
         """Regression: SARIF should not crash when issue/code are None."""

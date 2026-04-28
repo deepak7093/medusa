@@ -1409,6 +1409,56 @@ class MedusaParallelScanner:
             # Mapping is best-effort — never fail the scan/report for enrichment errors.
             pass
 
+        # High-level finding category (independent of rule 'category')
+        def _finding_category(f: dict) -> str:
+            scanner = str(f.get('scanner') or '').strip()
+            file_path = str(f.get('file') or '').lower()
+            text = f"{f.get('issue') or ''} {f.get('code') or ''}".lower()
+
+            # Secrets / credential exposure
+            if scanner == 'GitLeaksScanner' or 'gitleaks' in scanner.lower():
+                return 'secret'
+
+            # Dependency / CVE vulnerability findings
+            if scanner in ('CriticalCVEScanner', 'TrivyScanner'):
+                return 'vulnerability'
+            if 'cve-' in str(f.get('rule_id') or '').lower() or 'cve-' in text:
+                return 'vulnerability'
+
+            # IaC / config security
+            if scanner in ('TerraformScanner', 'KubernetesScanner', 'DockerComposeScanner', 'AnsibleScanner', 'NginxScanner'):
+                return 'iac'
+            if file_path.endswith(('.tf', '.tfvars', '.hcl', '.yaml', '.yml')) and scanner in ('KubernetesScanner', 'TerraformScanner', 'AnsibleScanner'):
+                return 'iac'
+
+            # Container / Docker supply chain
+            if scanner in ('DockerScanner', 'DockerMCPScanner'):
+                return 'container'
+            if file_path.endswith(('dockerfile',)) or '/docker' in file_path:
+                if scanner in ('DockerScanner', 'TrivyScanner'):
+                    return 'container'
+
+            # AI / agent / MCP / RAG findings
+            ai_scanners = {
+                'AIContextScanner', 'AgentMemoryScanner', 'AgentReflectionScanner', 'AgentPlanningScanner',
+                'MultiAgentScanner', 'ExcessiveAgencyScanner', 'PromptLeakageScanner', 'PromptInjectionCodeScanner',
+                'ToolCallbackScanner', 'OWASPLLMScanner', 'LLMOpsScanner', 'LLMGuardScanner', 'GarakScanner',
+                'ModelAttackScanner', 'VectorDBScanner', 'DatasetInjectionScanner', 'HyperparameterScanner',
+                'ModelScanScanner', 'MCPConfigScanner', 'MCPServerScanner', 'MCPRemoteRCEScanner',
+            }
+            if scanner in ai_scanners:
+                return 'ai'
+
+            # SAST (code scanning) as a sensible default for code scanners
+            if scanner.endswith('Scanner'):
+                return 'sast'
+
+            return 'other'
+
+        for f in findings:
+            if not f.get('finding_category'):
+                f['finding_category'] = _finding_category(f)
+
         # Apply FP filter to reduce false positives
         fp_stats = None
         likely_fps = []

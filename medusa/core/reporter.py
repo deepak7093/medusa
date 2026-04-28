@@ -18,6 +18,8 @@ from medusa import __version__
 # Pre-compiled regex patterns for SARIF rule ID sanitisation (used per-finding)
 _SARIF_RULE_ID_SANITIZE = re.compile(r'[^a-zA-Z0-9-]')
 _SARIF_RULE_ID_COLLAPSE = re.compile(r'-+')
+_CVE_RE = re.compile(r'\b(CVE-\d{4}-\d{4,})\b', re.IGNORECASE)
+_CVE_RULE_ID_RE = re.compile(r'^(?:cve-)?(cve-\d{4}-\d{4,})$', re.IGNORECASE)
 
 # Pre-compiled tag patterns for _generate_sarif_tags (used per-finding)
 _SARIF_TAG_PATTERNS: List[tuple] = [
@@ -337,6 +339,8 @@ class MedusaReportGenerator:
                 md += f"**File:** `{_md_sanitize_inline(str(finding['file']))}:{finding['line']}`  \n"
                 md += f"**Scanner:** {finding['scanner']}  \n"
                 md += f"**Confidence:** {finding.get('confidence', 'N/A')}  \n"
+                if finding.get('finding_category'):
+                    md += f"**Category:** `{_md_sanitize_inline(str(finding.get('finding_category')))} `  \n"
 
                 cwe = finding.get('cwe')
                 if cwe and str(cwe).isdigit():
@@ -448,21 +452,123 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
         results: List[Dict[str, Any]] = []
         seen_rule_ids: Dict[str, int] = {}
 
+        def _safe_int(v: Any, default: int = 1) -> int:
+            try:
+                if v is None:
+                    return default
+                iv = int(v)
+                return iv if iv > 0 else default
+            except Exception:
+                return default
+
+        def _pick_rule_id(finding: Dict[str, Any], issue_text: str) -> tuple[str, Optional[str]]:
+            """
+            Return (rule_id, cwe_numeric_or_none).
+
+            Preference order:
+            - CWE if numeric
+            - CVE if finding has a CVE-like rule_id or issue text contains CVE-YYYY-NNNN
+            - otherwise sanitized issue text
+            """
+            cwe_val = finding.get('cwe')
+            if cwe_val and str(cwe_val).isdigit():
+                return (f"CWE-{cwe_val}", str(cwe_val))
+
+            # Prefer explicit rule_id when it contains a CVE identifier.
+            rid = finding.get('rule_id')
+            if isinstance(rid, str):
+                # common: "cve-cve-2025-11226" (from CriticalCVEScanner)
+                m = re.search(r'(CVE-\d{4}-\d{4,})', rid, re.IGNORECASE)
+                if m:
+                    return (m.group(1).upper(), None)
+                m2 = _CVE_RULE_ID_RE.match(rid.strip())
+                if m2:
+                    return (m2.group(1).upper(), None)
+
+            m3 = _CVE_RE.search(issue_text)
+            if m3:
+                return (m3.group(1).upper(), None)
+
+            # Fallback: sanitize issue text into a stable rule id.
+            rule_id = _SARIF_RULE_ID_SANITIZE.sub('-', issue_text)
+            rule_id = _SARIF_RULE_ID_COLLAPSE.sub('-', rule_id).strip('-')
+            return (rule_id or "unknown", None)
+
+        def _format_result_message(finding: Dict[str, Any], issue_text: str) -> str:
+            """
+            Produce a SARIF result message.
+            For CVE-style findings, emit a multi-line, compliance-friendly summary.
+            Otherwise, return the raw issue text.
+            """
+            # If it looks like a CVE, try to format similarly to the requested template.
+            cve_match = _CVE_RE.search(issue_text)
+            if not cve_match:
+                return issue_text
+
+            cve_id = cve_match.group(1).upper()
+
+            # Best-effort parse of "<pkg>@<ver>" and "Upgrade to <fixed>+"
+            pkg = None
+            ver = None
+            pv = re.search(r'([A-Za-z0-9_.:-]+)@([0-9][A-Za-z0-9+_.:-]*)', issue_text)
+            if pv:
+                pkg = pv.group(1)
+                ver = pv.group(2)
+
+            fixed = None
+            fx = re.search(r'Upgrade to ([^+.\s]+)\+', issue_text)
+            if fx:
+                fixed = fx.group(1)
+            elif 'No fix available' in issue_text:
+                fixed = 'No fix available'
+
+            # URL: "See: <url>"
+            url = None
+            u = re.search(r'\bSee:\s*(https?://\S+)', issue_text)
+            if u:
+                url = u.group(1).rstrip(').,')
+
+            severity = str(finding.get('severity') or 'UNDEFINED').upper()
+            file_uri = str(finding.get('file') or 'unknown')
+
+            lines = []
+            if pkg:
+                lines.append(f"Package: {pkg}")
+            if ver:
+                lines.append(f"Installed Version: {ver}")
+            lines.append(f"Vulnerability {cve_id}")
+            lines.append(f"Severity: {severity}")
+            if fixed:
+                lines.append(f"Fixed Version: {fixed}")
+            if url:
+                lines.append(f"Link: [{cve_id}]({url})")
+            else:
+                lines.append(f"Link: {cve_id}")
+
+            # Keep original issue text as a trailing hint for context.
+            # (This is useful when parsing misses fields.)
+            if issue_text and issue_text != cve_id:
+                lines.append(f"\nRaw: {issue_text}")
+
+            return "\n".join(lines)
+
+        def _format_location_message(finding: Dict[str, Any], issue_text: str) -> str:
+            file_uri = str(finding.get('file') or 'unknown')
+            # Prefer a package@version hint for CVEs if present.
+            pv = re.search(r'([A-Za-z0-9_.:-]+)@([0-9][A-Za-z0-9+_.:-]*)', issue_text)
+            if pv:
+                return f"{Path(file_uri).name}: {pv.group(1)}@{pv.group(2)}"
+            return f"{Path(file_uri).name}: {issue_text[:120]}"
+
         for finding in findings:
             issue_text = finding.get('issue')
             if issue_text is None or issue_text == '':
                 issue_text = 'unknown'
             issue_text = str(issue_text)
 
-            # Determine rule ID
-            cwe = finding.get('cwe')
-            if cwe and str(cwe).isdigit():
-                rule_id = f"CWE-{cwe}"
-            else:
-                cwe = None  # Clear invalid CWE
-                # Sanitize issue text into a rule ID
-                rule_id = _SARIF_RULE_ID_SANITIZE.sub('-', issue_text)
-                rule_id = _SARIF_RULE_ID_COLLAPSE.sub('-', rule_id).strip('-')
+            # Determine rule ID (prefer CWE/CVE-like identifiers when present)
+            rule_id, cwe_numeric = _pick_rule_id(finding, issue_text)
+            cwe = cwe_numeric
 
             # Track rule index for ruleIndex reference
             if rule_id not in seen_rule_ids:
@@ -498,8 +604,13 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
             fingerprint = hashlib.sha256(fingerprint_input.encode()).hexdigest()
 
             # Build location
+            start_line = _safe_int(finding.get('line'), 1)
+            start_col = _safe_int(finding.get('column'), 1)
             region: Dict[str, Any] = {
-                'startLine': finding.get('line', 1),
+                'startLine': start_line,
+                'startColumn': start_col,
+                'endLine': start_line,
+                'endColumn': start_col,
             }
             if finding.get('code'):
                 region['snippet'] = {'text': finding['code']}
@@ -508,9 +619,13 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
                 'physicalLocation': {
                     'artifactLocation': {
                         'uri': finding.get('file', 'unknown'),
-                        'uriBaseId': '%SRCROOT%',
+                        'uriBaseId': 'ROOTPATH',
                     },
                     'region': region,
+                }
+                ,
+                'message': {
+                    'text': _format_location_message(finding, issue_text),
                 }
             }
 
@@ -520,7 +635,7 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
                 'ruleIndex': rule_index,
                 'level': severity_to_level.get(finding.get('severity', 'UNDEFINED'), 'note'),
                 'message': {
-                    'text': issue_text,
+                    'text': _format_result_message(finding, issue_text),
                 },
                 'locations': [location],
                 'fingerprints': {
@@ -612,6 +727,17 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
                     cid = c.get('control_id')
                     if fw and cid:
                         tags.append(f"external/compliance/{_safe_tag_component(fw)}/{_safe_tag_component(cid)}")
+
+        # Finding category: prefer precomputed, else infer from content/mappings.
+        fcat = finding.get('finding_category')
+        if not fcat:
+            issue_text = str(finding.get('issue') or '')
+            if _CVE_RE.search(issue_text) or str(finding.get('rule_id') or '').lower().startswith('cve-'):
+                fcat = 'vulnerability'
+            elif mappings and (mappings.get('owasp_llm') or mappings.get('mitre_atlas') or mappings.get('mitre_attack')):
+                fcat = 'ai'
+        if fcat:
+            tags.append(f"medusa/category/{_safe_tag_component(fcat)}")
 
         return tags
 
@@ -1281,6 +1407,9 @@ MEDUSA is an AI-first security scanner with 78 analyzers and 9,600+ detection ru
             mapping_chips = ''
             if mappings:
                 chips: List[str] = []
+                fcat = finding.get('finding_category')
+                if fcat:
+                    chips.append(f'<span class="chip">Category {html_lib.escape(str(fcat))}</span>')
                 owasp_llm = mappings.get('owasp_llm')
                 if owasp_llm:
                     chips.append(f'<span class="chip">OWASP {html_lib.escape(str(owasp_llm))}</span>')
